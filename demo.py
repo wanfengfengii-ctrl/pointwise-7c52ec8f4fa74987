@@ -11,12 +11,15 @@ from excerpts.selection import select_excerpt
 from excerpts.store import ExcerptStore
 from issue.publish import publish_packet
 from issue.receipts import ReceiptStore
+from issue.three_publish import publish_three_draft_packet
 from review.confirmations import Confirmation
 from review.requests import OldAnnotation, ReviewRequest
 from review.submit import submit_review
+from review.three_submit import submit_three_draft_review
 from revisions.importer import import_revision
 from revisions.model import SourceSegment
 from revisions.store import RevisionStore
+from three_draft_cases import offline_desk, source_desk
 
 
 def _load_revision(store, manuscript, data):
@@ -28,10 +31,52 @@ def _show(step, **fields):
     print(json.dumps({'step': step, **fields}, ensure_ascii=False, sort_keys=True))
 
 
+def _three_draft_demo(base: Path) -> None:
+    """Issue the split-middle packet at the source desk, close the source,
+    then sign both conclusions offline and retrieve them again after reopen."""
+    source_path, offline_path = base / 'three-source.sqlite', base / 'three-offline.sqlite'
+    with source_desk(source_path, 'split-middle') as (revisions, excerpts, inputs):
+        envelope = publish_three_draft_packet(
+            revisions, excerpts, inputs.old_excerpt_id,
+            inputs.middle_revision_id, inputs.new_excerpt_id, packet_id='split-middle-demo')
+        _show(9, packet='split-middle-demo', middle_revision=inputs.middle_revision_id,
+              public_old=list(inputs.old_word_ids), public_new=list(inputs.new_word_ids))
+    with offline_desk(offline_path) as (receipts, archive):
+        receipt = receipts.accept(envelope)
+        _show(10, packet=receipt.packet_id, receipt=receipt.receipt_id)
+        annotation = OldAnnotation('split-note', inputs.old_word_ids[0])
+        baseline = submit_three_draft_review(
+            receipts, archive, ReviewRequest(receipt.packet_id, (annotation,)))
+        before = baseline.report.details
+        if before['cost'] != 2 or before['outcomes'][0]['targets'] \
+                or not before['outcomes'][0]['can_have_no_public_landing']:
+            raise RuntimeError('unexpected unconfirmed three-draft result')
+        _show(11, report=baseline.report.report_id, cost=before['cost'],
+              outcomes=before['outcomes'], provenance=before['packet'])
+        confirmation = Confirmation(inputs.old_word_ids[0], inputs.new_word_ids[0])
+        confirmed = submit_three_draft_review(
+            receipts, archive, ReviewRequest(receipt.packet_id, (annotation,), (confirmation,)))
+        after = confirmed.report.details
+        targets = [word['word_id'] for word in after['outcomes'][0]['targets']]
+        if after['cost'] != 4 or targets != [confirmation.new_word_id] \
+                or after['outcomes'][0]['can_have_no_public_landing']:
+            raise RuntimeError('unexpected confirmed three-draft result')
+        _show(12, report=confirmed.report.report_id, cost=after['cost'], outcomes=after['outcomes'])
+        report_ids = [baseline.report.report_id, confirmed.report.report_id]
+    with offline_desk(offline_path) as (receipts, archive):
+        recovered = tuple(read_report(archive, report_id) for report_id in report_ids)
+        if [entry.report.details for entry in recovered] != [baseline.report.details, confirmed.report.details]:
+            raise RuntimeError('reopened three-draft reports changed')
+        _show(13, reports=report_ids,
+              original_receipts=[entry.receipt.receipt_id for entry in recovered],
+              middle_revision=recovered[0].report.details['packet']['middle_revision_id'])
+
+
 def main():
     sample = json.loads(Path(__file__).with_name('sample_subtitles.json').read_text(encoding='utf-8'))
     with TemporaryDirectory(prefix='qingyu-handoff-') as directory:
-        source_path, offline_path = Path(directory, 'source.sqlite'), Path(directory, 'offline.sqlite')
+        base = Path(directory)
+        source_path, offline_path = base / 'source.sqlite', base / 'offline.sqlite'
         with closing(sqlite3.connect(offline_path)) as offline:
             receipts, archive = ReceiptStore(offline), ArchiveStore(offline)
             receipts.initialize()
@@ -86,6 +131,7 @@ def main():
             _show(8, later_revision=correction.revision_id,
                   reports=[entry.report.report_id for entry in recovered],
                   original_receipts=[entry.receipt.receipt_id for entry in recovered])
+        _three_draft_demo(base)
 
 
 if __name__ == '__main__':

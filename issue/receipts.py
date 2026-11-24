@@ -2,8 +2,10 @@ import sqlite3
 from dataclasses import dataclass
 from uuid import uuid4
 
-from issue.envelope import EnvelopeMismatch, open_envelope, packet_digest
+from issue.envelope import EnvelopeMismatch, packet_digest
 from issue.packet import Packet
+from issue.three_envelope import open_any_envelope
+from issue.three_packet import ThreeDraftPacket
 
 
 @dataclass(frozen=True)
@@ -15,7 +17,7 @@ class PacketReceipt:
 
 @dataclass(frozen=True)
 class ReceivedPacket:
-    packet: Packet
+    packet: Packet | ThreeDraftPacket
     envelope: str
     receipt: PacketReceipt
 
@@ -33,7 +35,7 @@ class ReceiptStore:
         )''')
 
     def accept(self, envelope: str) -> PacketReceipt:
-        packet = open_envelope(envelope)
+        packet = open_any_envelope(envelope)
         digest = packet_digest(packet)
         db = self.connection
         db.execute('BEGIN IMMEDIATE')
@@ -55,7 +57,7 @@ class ReceiptStore:
         if row is None:
             return None
         envelope, receipt_id, digest = row
-        packet = open_envelope(envelope)
+        packet = open_any_envelope(envelope)
         if packet.packet_id != packet_id or packet_digest(packet) != digest:
             raise EnvelopeMismatch('stored receipt disagrees with the packet')
         return ReceivedPacket(packet, envelope, PacketReceipt(receipt_id, packet_id, digest))

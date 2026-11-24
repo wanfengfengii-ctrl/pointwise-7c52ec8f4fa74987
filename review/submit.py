@@ -1,3 +1,4 @@
+from issue.three_packet import ThreeDraftPacket
 from archive.records import ArchiveEntry
 from archive.sign import sign_decision
 from archive.transactions import ArchiveStore
@@ -15,6 +16,8 @@ def submit_review(receipts: ReceiptStore, archive: ArchiveStore, request: Review
     if received is None:
         raise ValueError('packet has not been received')
     packet = received.packet
+    if isinstance(packet, ThreeDraftPacket):
+        raise ValueError('this review entry only accepts two-draft packets')
     bound = bind_request(packet, request)
     confirmations = bind_confirmations(packet, request.confirmations)
     alignment = resolve_alignment(packet.evidence, confirmations)
